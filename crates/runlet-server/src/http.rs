@@ -5,13 +5,13 @@ use axum::Router;
 use tower_http::trace::TraceLayer;
 
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health))
-        .route("/jobs", post(create_job))
-        .route("/jobs/:job_id", get(get_job))
-        .route("/jobs/:job_id/events", get(stream_events))
-        .route("/jobs/:job_id/events/history", get(get_event_history))
-        .route("/jobs/:job_id/cancel", post(cancel_job))
-        .with_state(state)
-        .layer(TraceLayer::new_for_http())
+	Router::new()
+		.route("/health", get(health))
+		.route("/jobs", post(create_job))
+		.route("/jobs/:job_id", get(get_job))
+		.route("/jobs/:job_id/events", get(stream_events))
+		.route("/jobs/:job_id/events/history", get(get_event_history))
+		.route("/jobs/:job_id/cancel", post(cancel_job))
+		.with_state(state)
+		.layer(TraceLayer::new_for_http())
 }
