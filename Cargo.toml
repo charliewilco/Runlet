@@ -1,0 +1,19 @@
+[workspace]
+members = [
+  "crates/runlet-core",
+  "crates/runlet-server",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+thiserror = "1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+ulid = "1"

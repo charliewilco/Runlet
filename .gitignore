@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+**/*.swp
+**/*.swo
+.DS_Store
+.env
+.env.*
+*.log
+.idea/
+.vscode/
+coverage/
+dist/
+tmp/
