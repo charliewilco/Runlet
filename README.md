@@ -2,31 +2,31 @@
 
 # Runlet
 
-Runlet is a small Rust service for running background jobs (initially shell commands) and streaming structured events to clients over Server‑Sent Events (SSE). Clients can start jobs, watch live output/progress, and cancel jobs.
+Runlet is a small Go service for running background jobs and streaming structured events over Server-Sent Events (SSE). It can be used as a library or run as a standalone binary.
 
-This README describes the v1 behavior implemented in this repo.
+This README documents the v1 behavior implemented in this repository.
 
 ## Features
 
-- Start a job (command + args) and receive a `job_id`.
-- Subscribe to events for that job via SSE.
+- Start a job with a command, arguments, working directory, and environment.
+- Subscribe to job events over SSE.
 - Fetch event history for reconnects and debugging.
 - Cancel running or queued jobs.
-- Monotonic per‑job event sequencing (`seq`).
-- In‑memory storage with bounded event history.
+- Monotonic per-job event sequencing.
+- In-memory storage with bounded history.
 
-Non‑goals (v1): auth, clustering, durable persistence, workflow graphs.
+Non-goals for v1: auth, clustering, durable persistence, workflow graphs.
 
-## Quick start
+## Quick Start
 
 Requirements:
-- Rust (stable)
-- macOS/Linux (Windows should work but is untested here)
+
+- Go 1.22+
 
 Run the server:
 
 ```bash
-cargo run -p runlet-server -- serve --addr 127.0.0.1:8787
+go run ./cmd/runlet serve --addr 127.0.0.1:8787
 ```
 
 Create a job:
@@ -55,11 +55,37 @@ Fetch history:
 curl -s "http://127.0.0.1:8787/jobs/<JOB_ID>/events/history?after_seq=0&limit=500"
 ```
 
-## API
+## Library
+
+Runlet is importable as `github.com/charliewilco/runlet`.
+
+```go
+r := runlet.New(runlet.Config{
+	MaxEventsPerJob: 10000,
+	MaxLineBytes:    16384,
+})
+
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+go r.Start(ctx)
+
+jobID, err := r.CreateJob(ctx, runlet.JobRequest{
+	Cmd:  "bash",
+	Args: []string{"-lc", "echo hello"},
+})
+
+events, err := r.EventHistory(ctx, jobID, 0, 500)
+err = r.CancelJob(ctx, jobID)
+```
+
+`Start` blocks until its context is canceled and all job goroutines exit, so callers should run it in a goroutine when using the library directly.
+
+## HTTP API
 
 Base URL: `http://127.0.0.1:8787`
 
-### Create job
+### Create Job
 
 `POST /jobs`
 
@@ -80,7 +106,7 @@ Response:
 { "job_id": "01HXYZ...", "status": "queued" }
 ```
 
-### Get job status
+### Get Job Status
 
 `GET /jobs/{job_id}`
 
@@ -97,31 +123,24 @@ Response:
 }
 ```
 
-### Stream events (SSE)
+### Stream Events
 
 `GET /jobs/{job_id}/events`
 
-- Response `content-type: text/event-stream`
-- Supports `Last-Event-ID` header for reconnects
-- Optional query `last_event_id` also supported
+- Response content type: `text/event-stream`
+- Supports `Last-Event-ID` header
+- Supports `last_event_id` query parameter
 
 SSE format:
 
-```
+```text
 id: <seq>
 event: <kind>
 data: <json>
-```
-
-Example:
 
 ```
-id: 1
-event: job.started
-data: {"job_id":"...","ts":"..."}
-```
 
-### Fetch event history
+### Fetch Event History
 
 `GET /jobs/{job_id}/events/history?after_seq=0&limit=500`
 
@@ -136,7 +155,7 @@ Response:
 }
 ```
 
-### Cancel job
+### Cancel Job
 
 `POST /jobs/{job_id}/cancel`
 
@@ -146,122 +165,119 @@ Response:
 { "job_id": "...", "status": "canceling" }
 ```
 
-## Event model
+## Event Model
 
-All events share this envelope in storage and SSE:
+Events are stored as:
 
-```rust
-struct EventRecord {
-  seq: u64,
-  ts: DateTime<Utc>,
-  kind: EventKind,
-  payload: serde_json::Value
+```go
+type EventRecord struct {
+	Seq     uint64
+	TS      time.Time
+	Kind    EventKind
+	Payload map[string]any
 }
 ```
 
-Event kinds (v1):
+Event kinds:
 
 - `job.queued`
 - `job.started`
-- `stdout` (payload: `{ "line": "..." }`)
-- `stderr` (payload: `{ "line": "..." }`)
-- `job.completed` (payload: `{ "exit_code": i32 }`)
-- `job.failed` (payload: `{ "message": "..." }`)
+- `stdout`
+- `stderr`
+- `job.completed`
+- `job.failed`
 - `job.canceled`
 - `job.cancel_requested`
 
 Rules:
-- `job.queued` is emitted immediately on creation with `seq=1`.
-- `job.started` when process spawns.
-- Terminal event is one of: `job.completed`, `job.failed`, `job.canceled`.
-- After terminal, the SSE stream completes shortly after.
 
-## Execution model
+- `job.queued` is emitted immediately on creation with `seq = 1`.
+- `job.started` is emitted when the process spawns.
+- The terminal event is one of `job.completed`, `job.failed`, or `job.canceled`.
+- The SSE stream closes shortly after the terminal event.
 
-- Jobs run via `tokio::process::Command`.
-- Stdout/stderr are read asynchronously and split on `\n`.
-- A per‑job sequencer task assigns monotonic `seq` values and appends to a bounded history buffer.
-- Events are fanned out to subscribers via `broadcast` channels.
+## Execution Model
+
+- Jobs run via `os/exec`.
+- Stdout and stderr are read asynchronously in goroutines and split on `\n`.
+- Output lines are truncated at `MaxLineBytes`.
+- A per-job sequencer goroutine assigns monotonic `seq` values for events after creation.
+- Events are fanned out to SSE subscribers with per-job channels protected by a mutex.
+
+## Project Structure
+
+```text
+runlet/
+  job.go
+  event.go
+  executor.go
+  store.go
+  sequencer.go
+  sse.go
+  server.go
+  runlet.go
+  cmd/
+    runlet/
+      main.go
+  go.mod
+  go.sum
+  README.md
+```
 
 ## Storage
 
-In‑memory (v1):
+In-memory only.
 
-- `jobs: HashMap<JobId, JobState>`
-- `events: VecDeque<EventRecord>` (bounded per job)
+- Jobs are held in a `map[JobID]*jobState`.
+- Event history is bounded per job by `MaxEventsPerJob`.
+- Oldest events are dropped when the limit is exceeded.
 
 Defaults:
 
-- `MAX_EVENTS_PER_JOB = 10_000`
-- `MAX_LINE_BYTES = 16_384` (lines are truncated beyond this)
+- `MaxEventsPerJob = 10_000`
+- `MaxLineBytes = 16_384`
 
-## Cancellation semantics
+## Cancellation Semantics
 
 - `POST /jobs/{id}/cancel` emits `job.cancel_requested` immediately.
-- If queued, executor emits `job.canceled` without spawning.
-- If running:
-  - Unix: SIGTERM, wait 1500ms, then SIGKILL if still alive.
-  - Windows: best‑effort `kill()`.
+- If the job is still queued, it becomes `job.canceled` without spawning a process.
+- If the job is running, Runlet sends `os.Interrupt`, waits 1500 ms, then sends `os.Kill`.
 
 ## CLI
 
-Binary: `runlet-server`
+Binary: `runlet`
+
+```bash
+runlet serve --addr 127.0.0.1:8787 --max-events-per-job 10000 --max-line-bytes 16384 --log-level info
+```
 
 Flags:
 
-- `serve` (optional subcommand)
+- `serve` subcommand
 - `--addr 127.0.0.1:8787`
 - `--max-events-per-job 10000`
 - `--max-line-bytes 16384`
 - `--log-level info`
 
-Examples:
-
-```bash
-cargo run -p runlet-server -- serve --addr 127.0.0.1:8787
-cargo run -p runlet-server -- --addr 0.0.0.0:8787 --log-level debug
-```
-
-## Project structure
-
-```
-runlet/
-  Cargo.toml
-  crates/
-    runlet-core/
-      src/
-        event.rs
-        executor.rs
-        job.rs
-        store.rs
-    runlet-server/
-      src/
-        main.rs
-        http.rs
-        routes.rs
-        sse.rs
-        state.rs
-```
-
 ## Tests
 
-Run all tests:
+Run:
 
 ```bash
-cargo test
+go test ./...
+go vet ./...
 ```
 
-Core tests include:
+Core tests cover:
 
-- Event sequencing monotonicity
-- Job completion event flow
-- Cancel flow emits `job.cancel_requested` and terminal `job.canceled`
-
-## Notes / limitations
-
-- No auth or multi‑tenant permissions in v1.
-- In‑memory state only; restarts lose history.
-- No command allowlist (runs arbitrary commands in local environment).
+- Job creation returns a valid job ID and `queued` status
+- Monotonic sequencing across concurrent jobs
+- Completion emits `job.completed` with the correct exit code
+- Canceling a queued job emits `job.canceled` without spawning
+- Canceling a running job emits `job.cancel_requested` then `job.canceled`
+- SSE reconnects replay only events after `Last-Event-ID`
+- Long output lines are truncated, not dropped
+- `Start` exits cleanly when its context is canceled
 
 ## License
 

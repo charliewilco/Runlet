@@ -3,35 +3,28 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   build:
-    name: Build release binaries
+    name: Build release binary
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/setup-go@v5
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
-      - run: cargo build --release -p runlet-server
-      - name: Package binary
-        run: |
-          mkdir -p dist
-          cp target/release/runlet-server dist/
-          tar -czf runlet-server-linux-x86_64.tar.gz -C dist runlet-server
+          go-version: "1.22"
+          cache: true
+      - run: go mod download
+      - run: mkdir -p dist && go build -o dist/runlet ./cmd/runlet
+      - run: tar -C dist -czf runlet-linux-x86_64.tar.gz runlet
       - uses: actions/upload-artifact@v4
         with:
-          name: runlet-server-linux-x86_64
-          path: runlet-server-linux-x86_64.tar.gz
+          name: runlet-linux-x86_64
+          path: runlet-linux-x86_64.tar.gz
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: runlet-server-linux-x86_64.tar.gz
+          files: runlet-linux-x86_64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
